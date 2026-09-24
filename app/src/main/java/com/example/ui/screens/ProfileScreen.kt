@@ -94,71 +94,73 @@ fun ProfileScreen(
                 color = TextPrimary
             )
 
-            // Merchant Admin Mode Entry Banner
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Primary),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onNavigateToAdmin() }
-                    .testTag("merchant_admin_banner")
-            ) {
-                Row(
+            // Merchant Admin Mode Entry Banner (Role-Protected: ONLY displayed if user is ADMIN)
+            if (uiState.currentUser?.role == com.example.model.UserRole.ADMIN) {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = Primary),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(18.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .clickable { onNavigateToAdmin() }
+                        .testTag("merchant_admin_banner")
                 ) {
-                    Box(
+                    Row(
                         modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.2f)),
-                        contentAlignment = Alignment.Center
+                            .fillMaxWidth()
+                            .padding(18.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(text = "🏪", fontSize = 22.sp)
-                    }
-
-                    Spacer(modifier = Modifier.width(14.dp))
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "Admin Dashboard",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color.White)
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = "MERCHANT",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Primary
-                                )
-                            }
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.2f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(text = "🏪", fontSize = 22.sp)
                         }
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Accept orders, dispatch couriers & fulfillment",
-                            fontSize = 12.sp,
-                            color = Color.White.copy(alpha = 0.85f)
+
+                        Spacer(modifier = Modifier.width(14.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "Admin Dashboard",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color.White)
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "MERCHANT",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Primary
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Accept orders, dispatch couriers & fulfillment",
+                                fontSize = 12.sp,
+                                color = Color.White.copy(alpha = 0.85f)
+                            )
+                        }
+
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
-
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(16.dp)
-                    )
                 }
             }
 
@@ -208,13 +210,13 @@ fun ProfileScreen(
                         Spacer(modifier = Modifier.height(6.dp))
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = PrimaryLight
+                            color = if (uiState.currentUser?.role == com.example.model.UserRole.ADMIN) Color(0xFFFEF3C7) else PrimaryLight
                         ) {
                             Text(
-                                text = "Lumina VIP Member",
-                                color = Primary,
+                                text = if (uiState.currentUser?.role == com.example.model.UserRole.ADMIN) "👑 Store Administrator" else "Lumina VIP Customer",
+                                color = if (uiState.currentUser?.role == com.example.model.UserRole.ADMIN) Color(0xFFD97706) else Primary,
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
+                                fontWeight = FontWeight.Bold,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                             )
                         }

@@ -64,7 +64,7 @@ fun AdminDashboardScreen(
     uiState: ShopUiState,
     onBackClick: () -> Unit,
     onUpdateOrderStatus: (orderId: String, newStatus: OrderStatus) -> Unit,
-    onViewOrderCustomerView: (Order) -> Unit
+    onViewOrderCustomerView: (Order) -> Unit = {}
 ) {
     val totalRevenue = uiState.orders.sumOf { it.total }
     val activeOrdersCount = uiState.orders.count { it.status != OrderStatus.DELIVERED }
@@ -518,6 +518,28 @@ private fun AdminOrderCard(
                         }
                     }
                 }
+
+                else -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Status: ${order.status.label}",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = TextSecondary
+                        )
+                        OutlinedButton(
+                            onClick = onViewCustomerView,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, BorderSubtle)
+                        ) {
+                            Text("View Details")
+                        }
+                    }
+                }
             }
         }
     }
@@ -531,6 +553,7 @@ private fun StatusBadge(status: OrderStatus) {
         OrderStatus.SHIPPED -> Triple(Color(0xFFEDE9FE), AccentViolet, "Shipped")
         OrderStatus.OUT_FOR_DELIVERY -> Triple(Color(0xFFE0E7FF), Color(0xFF3730A3), "On The Road")
         OrderStatus.DELIVERED -> Triple(AccentGreenLight, AccentGreen, "Delivered")
+        else -> Triple(Color(0xFFF1F5F9), Color(0xFF475569), status.label)
     }
 
     Box(

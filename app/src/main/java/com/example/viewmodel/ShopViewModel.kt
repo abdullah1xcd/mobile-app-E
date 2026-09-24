@@ -1,21 +1,32 @@
 package com.example.viewmodel
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.SampleData
+import com.example.data.local.AppDatabase
+import com.example.data.local.SessionPreferences
+import com.example.data.remote.ApiClient
+import com.example.data.repository.AuthRepository
+import com.example.data.repository.CartRepository
+import com.example.data.repository.CouponRepository
+import com.example.data.repository.OrderRepository
+import com.example.data.repository.ProductRepository
 import com.example.model.Address
 import com.example.model.CartItem
 import com.example.model.NotificationItem
 import com.example.model.Order
 import com.example.model.OrderStatus
+import com.example.model.PaymentStatus
 import com.example.model.Product
+import com.example.model.User
+import com.example.model.UserRole
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlin.random.Random
 
 enum class SortOption(val label: String) {
     POPULAR("Popular"),
@@ -33,8 +44,13 @@ data class FilterState(
 )
 
 data class ShopUiState(
+    val currentUser: User? = null,
     val userName: String = "Abdullah",
     val userEmail: String = "abdo@email.com",
+    val authLoading: Boolean = false,
+    val authError: String? = null,
+    val pushNotificationsEnabled: Boolean = true,
+    val fastCheckoutEnabled: Boolean = true,
     val products: List<Product> = SampleData.products,
     val cartItems: List<CartItem> = emptyList(),
     val appliedPromoCode: String? = null,
@@ -42,7 +58,7 @@ data class ShopUiState(
     val promoError: String? = null,
     val promoSuccessMessage: String? = null,
     val wishlistIds: Set<String> = setOf("prod-1", "prod-2"),
-    val orders: List<Order> = listOf(SampleData.createInitialOrder()),
+    val orders: List<Order> = emptyList(),
     val addresses: List<Address> = SampleData.defaultAddresses,
     val selectedAddressId: String = "addr-1",
     val notifications: List<NotificationItem> = SampleData.initialNotifications,
@@ -51,9 +67,15 @@ data class ShopUiState(
     val recentlyViewed: Product = SampleData.products[0],
     val selectedProduct: Product? = null,
     val currentTrackingOrder: Order? = null,
-    val selectedPaymentMethod: String = "Credit / Debit Card",
+    val selectedPaymentMethod: String = "Cash on Delivery",
     val lastPlacedOrder: Order? = null
 ) {
+    val isLoggedIn: Boolean
+        get() = currentUser != null
+
+    val isAdmin: Boolean
+        get() = currentUser?.role == UserRole.ADMIN
+
     val subtotal: Double
         get() = cartItems.sumOf { it.totalItemPrice }
 
@@ -109,29 +131,147 @@ data class ShopUiState(
         }
 }
 
-class ShopViewModel : ViewModel() {
+class ShopViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val _uiState = MutableStateFlow(ShopUiState())
+    // Clean Architecture Repositories & Data Sources
+    private val sessionPrefs = SessionPreferences(application)
+    private val database = AppDatabase.getDatabase(application)
+    private val apiService = ApiClient.getApiService(application)
+
+    private val authRepository = AuthRepository(sessionPrefs, apiService)
+    private val productRepository = ProductRepository(database.productDao(), apiService)
+    private val cartRepository = CartRepository(database.cartDao())
+    private val orderRepository = OrderRepository(database.orderDao(), apiService)
+    private val couponRepository = CouponRepository(apiService)
+
+    private val _uiState = MutableStateFlow(
+        ShopUiState(
+            currentUser = sessionPrefs.getCurrentUser() ?: User(
+                id = "usr-demo",
+                name = "Abdullah",
+                email = "abdo@email.com",
+                role = UserRole.CUSTOMER
+            ),
+            pushNotificationsEnabled = sessionPrefs.pushNotificationsEnabledFlow.value,
+            fastCheckoutEnabled = sessionPrefs.fastCheckoutEnabledFlow.value
+        )
+    )
     val uiState = _uiState.asStateFlow()
 
     private val _snackbarEvent = MutableSharedFlow<String>()
     val snackbarEvent = _snackbarEvent.asSharedFlow()
 
     init {
-        // Initialize cart with sample items as shown in user prompt
-        val nike = SampleData.products[0]
-        val watch = SampleData.products[1]
-        _uiState.update { state ->
-            state.copy(
-                cartItems = listOf(
-                    CartItem(product = nike, selectedSize = 42, selectedColor = "Navy / White", quantity = 1),
-                    CartItem(product = watch, selectedSize = 44, selectedColor = "Midnight Black", quantity = 1)
-                ),
-                currentTrackingOrder = state.orders.firstOrNull()
-            )
+        // 1. Observe Authentication Session
+        viewModelScope.launch {
+            authRepository.currentUserFlow.collect { user ->
+                _uiState.update { current ->
+                    current.copy(
+                        currentUser = user,
+                        userName = user?.name ?: "Guest",
+                        userEmail = user?.email ?: "guest@lumina.com"
+                    )
+                }
+            }
+        }
+
+        // 2. Observe Products Repository
+        viewModelScope.launch {
+            productRepository.getProducts().collect { productList ->
+                _uiState.update { it.copy(products = productList) }
+            }
+        }
+
+        // 3. Observe Cart Repository (Room DB)
+        viewModelScope.launch {
+            cartRepository.cartItemsFlow.collect { items ->
+                _uiState.update { it.copy(cartItems = items) }
+                if (items.isEmpty() && _uiState.value.cartItems.isEmpty()) {
+                    // Seed initial items into Room for seamless first run
+                    val nike = SampleData.products.firstOrNull() ?: return@collect
+                    val watch = SampleData.products.getOrNull(1) ?: return@collect
+                    cartRepository.addToCart(nike, 42, "Navy / White", 1)
+                    cartRepository.addToCart(watch, 44, "Midnight Black", 1)
+                }
+            }
+        }
+
+        // 4. Observe Orders Repository
+        viewModelScope.launch {
+            orderRepository.ordersFlow.collect { orderList ->
+                _uiState.update { current ->
+                    current.copy(
+                        orders = orderList,
+                        currentTrackingOrder = current.currentTrackingOrder ?: orderList.firstOrNull()
+                    )
+                }
+            }
+        }
+
+        // 5. Observe Preferences
+        viewModelScope.launch {
+            sessionPrefs.pushNotificationsEnabledFlow.collect { enabled ->
+                _uiState.update { it.copy(pushNotificationsEnabled = enabled) }
+            }
+        }
+        viewModelScope.launch {
+            sessionPrefs.fastCheckoutEnabledFlow.collect { enabled ->
+                _uiState.update { it.copy(fastCheckoutEnabled = enabled) }
+            }
         }
     }
 
+    // --- Authentication Actions ---
+    fun login(email: String, password: String, onComplete: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(authLoading = true, authError = null) }
+            val result = authRepository.login(email, password)
+            if (result.isSuccess) {
+                val user = result.getOrNull()
+                _uiState.update { it.copy(authLoading = false, authError = null) }
+                _snackbarEvent.emit("Welcome back, ${user?.name}!")
+                onComplete(true)
+            } else {
+                _uiState.update {
+                    it.copy(
+                        authLoading = false,
+                        authError = result.exceptionOrNull()?.message ?: "Login failed. Check your credentials."
+                    )
+                }
+                onComplete(false)
+            }
+        }
+    }
+
+    fun register(name: String, email: String, password: String, role: UserRole, phone: String?, onComplete: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(authLoading = true, authError = null) }
+            val result = authRepository.register(name, email, password, role, phone)
+            if (result.isSuccess) {
+                _uiState.update { it.copy(authLoading = false, authError = null) }
+                _snackbarEvent.emit("Account created! Welcome to Lumina.")
+                onComplete(true)
+            } else {
+                _uiState.update {
+                    it.copy(
+                        authLoading = false,
+                        authError = result.exceptionOrNull()?.message ?: "Registration failed."
+                    )
+                }
+                onComplete(false)
+            }
+        }
+    }
+
+    fun logout(onLoggedOut: () -> Unit = {}) {
+        viewModelScope.launch {
+            authRepository.logout()
+            _snackbarEvent.emit("Logged out of Lumina")
+            onLoggedOut()
+        }
+    }
+
+    // --- Product Selection & Search ---
     fun selectProduct(product: Product?) {
         _uiState.update { current ->
             current.copy(
@@ -163,18 +303,42 @@ class ShopViewModel : ViewModel() {
         }
     }
 
-    fun toggleInStockOnly() {
+    fun toggleInStockOnly(inStock: Boolean) {
         _uiState.update {
-            it.copy(filters = it.filters.copy(inStockOnly = !it.filters.inStockOnly))
+            it.copy(filters = it.filters.copy(inStockOnly = inStock))
+        }
+    }
+
+    fun updateMaxPrice(price: Double) {
+        _uiState.update {
+            it.copy(filters = it.filters.copy(maxPrice = price))
         }
     }
 
     fun resetFilters() {
         _uiState.update {
-            it.copy(
-                searchQuery = "",
-                filters = FilterState()
-            )
+            it.copy(filters = FilterState(selectedCategory = it.filters.selectedCategory))
+        }
+    }
+
+    // --- Cart Actions (Delegated to Room CartRepository) ---
+    fun addToCart(product: Product, size: Int? = null, color: String? = null, quantity: Int = 1) {
+        viewModelScope.launch {
+            cartRepository.addToCart(product, size, color, quantity)
+            _snackbarEvent.emit("Added ${product.name} to cart 🛍️")
+        }
+    }
+
+    fun updateCartQuantity(item: CartItem, delta: Int) {
+        viewModelScope.launch {
+            cartRepository.updateQuantity(item, delta)
+        }
+    }
+
+    fun removeFromCart(item: CartItem) {
+        viewModelScope.launch {
+            cartRepository.removeFromCart(item)
+            _snackbarEvent.emit("Removed ${item.product.name} from cart")
         }
     }
 
@@ -188,109 +352,33 @@ class ShopViewModel : ViewModel() {
                 set.add(productId)
                 true
             }
-            viewModelScope.launch {
-                _snackbarEvent.emit(if (added) "Added to wishlist ❤️" else "Removed from wishlist")
+            current.copy(wishlistIds = set).also {
+                viewModelScope.launch {
+                    val msg = if (added) "Saved to your Wishlist ❤️" else "Removed from Wishlist"
+                    _snackbarEvent.emit(msg)
+                }
             }
-            current.copy(wishlistIds = set)
         }
     }
 
-    fun addToCart(product: Product, size: Int? = null, color: String? = null, quantity: Int = 1) {
-        _uiState.update { current ->
-            val existingIndex = current.cartItems.indexOfFirst {
-                it.product.id == product.id && it.selectedSize == size && it.selectedColor == color
-            }
-
-            val updatedList = current.cartItems.toMutableList()
-            if (existingIndex >= 0) {
-                val existing = updatedList[existingIndex]
-                updatedList[existingIndex] = existing.copy(quantity = existing.quantity + quantity)
-            } else {
-                val actualSize = size ?: product.sizes.firstOrNull()
-                val actualColor = color ?: product.colors.firstOrNull()
-                updatedList.add(CartItem(product = product, selectedSize = actualSize, selectedColor = actualColor, quantity = quantity))
-            }
-
-            viewModelScope.launch {
-                _snackbarEvent.emit("Added ${product.name} to cart 🛒")
-            }
-
-            current.copy(cartItems = updatedList)
-        }
-    }
-
-    fun updateCartQuantity(item: CartItem, delta: Int) {
-        _uiState.update { current ->
-            val updated = current.cartItems.mapNotNull {
-                if (it.product.id == item.product.id && it.selectedSize == item.selectedSize && it.selectedColor == item.selectedColor) {
-                    val newQty = it.quantity + delta
-                    if (newQty <= 0) null else it.copy(quantity = newQty)
-                } else it
-            }
-            current.copy(cartItems = updated)
-        }
-    }
-
-    fun removeFromCart(item: CartItem) {
-        _uiState.update { current ->
-            val updated = current.cartItems.filterNot {
-                it.product.id == item.product.id && it.selectedSize == item.selectedSize && it.selectedColor == item.selectedColor
-            }
-            viewModelScope.launch {
-                _snackbarEvent.emit("Removed item from cart")
-            }
-            current.copy(cartItems = updated)
-        }
-    }
-
+    // --- Coupon Validation (Delegated to CouponRepository) ---
     fun applyPromoCode(code: String) {
-        val cleanCode = code.trim().uppercase()
-        if (cleanCode.isEmpty()) {
-            _uiState.update { it.copy(promoError = "Please enter a promo code", promoSuccessMessage = null) }
-            return
-        }
-
-        when (cleanCode) {
-            "SAVE20" -> {
-                val discount = 200.0
+        viewModelScope.launch {
+            val result = couponRepository.validateCoupon(code, _uiState.value.subtotal)
+            if (result.isValid) {
                 _uiState.update {
                     it.copy(
-                        appliedPromoCode = cleanCode,
-                        promoDiscount = discount,
+                        appliedPromoCode = result.code,
+                        promoDiscount = result.discountAmount,
                         promoError = null,
-                        promoSuccessMessage = "Coupon SAVE20 applied! Saved 200 EGP"
+                        promoSuccessMessage = result.message
                     )
                 }
-                viewModelScope.launch { _snackbarEvent.emit("Saved 200 EGP with SAVE20 🎉") }
-            }
-            "NOON40", "LUMINA40" -> {
-                val discount = 400.0
+                _snackbarEvent.emit("${result.message} 🎉")
+            } else {
                 _uiState.update {
                     it.copy(
-                        appliedPromoCode = cleanCode,
-                        promoDiscount = discount,
-                        promoError = null,
-                        promoSuccessMessage = "Coupon applied! Saved 400 EGP"
-                    )
-                }
-                viewModelScope.launch { _snackbarEvent.emit("Saved 400 EGP! 🎉") }
-            }
-            "WELCOME" -> {
-                val discount = 150.0
-                _uiState.update {
-                    it.copy(
-                        appliedPromoCode = cleanCode,
-                        promoDiscount = discount,
-                        promoError = null,
-                        promoSuccessMessage = "Welcome coupon applied! Saved 150 EGP"
-                    )
-                }
-                viewModelScope.launch { _snackbarEvent.emit("Welcome gift applied: 150 EGP off! ✨") }
-            }
-            else -> {
-                _uiState.update {
-                    it.copy(
-                        promoError = "Invalid promo code. Try SAVE20 or WELCOME",
+                        promoError = result.message,
                         promoSuccessMessage = null
                     )
                 }
@@ -323,134 +411,129 @@ class ShopViewModel : ViewModel() {
         _uiState.update { it.copy(selectedPaymentMethod = method) }
     }
 
+    // --- Order Creation (Authoritative & Room-Persisted) ---
     fun placeOrder(): Order? {
         val current = _uiState.value
         if (current.cartItems.isEmpty()) return null
 
-        val newOrderId = (10450 + Random.nextInt(10, 999)).toString()
-        val addressStr = current.selectedAddress?.street ?: "Villa 221, South 90th St, New Cairo"
-
-        val newOrder = Order(
-            orderId = newOrderId,
-            date = "Today • Just now",
-            items = current.cartItems,
-            subtotal = current.subtotal,
-            deliveryFee = current.deliveryFee,
-            discount = current.promoDiscount,
-            total = current.total,
-            status = OrderStatus.CONFIRMED,
-            estimatedDelivery = "Tomorrow • 2:00–4:00 PM",
-            address = addressStr,
-            courierName = "Ahmed",
-            courierPhone = "+20 100 892 3411",
-            paymentMethod = current.selectedPaymentMethod,
-            etaMinutes = 25
+        val address = current.selectedAddress ?: Address(
+            id = "addr-default",
+            title = "Home",
+            street = "Villa 221, South 90th St, New Cairo"
         )
 
-        val newNotif = NotificationItem(
-            id = "notif-${System.currentTimeMillis()}",
-            title = "Order #$newOrderId Confirmed!",
-            message = "We're packing your order. Estimated delivery: Tomorrow 2:00-4:00 PM.",
-            timeAgo = "Just now",
-            group = "Today",
-            iconEmoji = "🎉",
-            isUnread = true,
-            orderId = newOrderId
-        )
+        var createdOrder: Order? = null
 
-        _uiState.update {
-            it.copy(
-                orders = listOf(newOrder) + it.orders,
-                cartItems = emptyList(),
-                appliedPromoCode = null,
-                promoDiscount = 0.0,
-                lastPlacedOrder = newOrder,
-                currentTrackingOrder = newOrder,
-                notifications = listOf(newNotif) + it.notifications
+        viewModelScope.launch {
+            val result = orderRepository.createOrder(
+                items = current.cartItems,
+                address = address,
+                paymentMethod = current.selectedPaymentMethod,
+                couponDiscount = current.promoDiscount
             )
+
+            if (result.isSuccess) {
+                val newOrder = result.getOrNull()!!
+                createdOrder = newOrder
+
+                // Clear Cart via Room
+                cartRepository.clearCart()
+
+                val newNotif = NotificationItem(
+                    id = "notif-${System.currentTimeMillis()}",
+                    title = "Order #${newOrder.orderId} Confirmed!",
+                    message = "We're packing your order. Estimated delivery: ${newOrder.estimatedDelivery}.",
+                    timeAgo = "Just now",
+                    group = "Today",
+                    iconEmoji = "🎉",
+                    isUnread = true,
+                    orderId = newOrder.orderId
+                )
+
+                _uiState.update {
+                    it.copy(
+                        appliedPromoCode = null,
+                        promoDiscount = 0.0,
+                        lastPlacedOrder = newOrder,
+                        currentTrackingOrder = newOrder,
+                        notifications = listOf(newNotif) + it.notifications
+                    )
+                }
+            }
         }
 
-        return newOrder
+        return _uiState.value.lastPlacedOrder ?: _uiState.value.orders.firstOrNull()
     }
 
+    // --- Merchant Admin Order Status Transition ---
     fun updateOrderStatus(orderId: String, newStatus: OrderStatus) {
-        var notifTitle = ""
-        var notifMsg = ""
-        var icon = "📦"
-
-        when (newStatus) {
-            OrderStatus.CONFIRMED -> {
-                notifTitle = "Order #$orderId Confirmed!"
-                notifMsg = "Merchant accepted your order and started preparation."
-                icon = "✅"
+        // Enforce role check: only ADMIN or STAFF
+        if (!_uiState.value.isAdmin) {
+            viewModelScope.launch {
+                _snackbarEvent.emit("Access Denied: Only Store Admins can update order status.")
             }
-            OrderStatus.PREPARING -> {
-                notifTitle = "Order #$orderId Packing"
-                notifMsg = "Your items are being packed in the warehouse."
-                icon = "📦"
-            }
-            OrderStatus.SHIPPED -> {
-                notifTitle = "Order #$orderId Shipped!"
-                notifMsg = "Handed to courier Ahmed (0100 892 3411)."
-                icon = "🚚"
-            }
-            OrderStatus.OUT_FOR_DELIVERY -> {
-                notifTitle = "🚚 Order #$orderId Out for Delivery!"
-                notifMsg = "Courier is approaching your doorstep in ~15 mins."
-                icon = "📍"
-            }
-            OrderStatus.DELIVERED -> {
-                notifTitle = "🎉 Order #$orderId Delivered!"
-                notifMsg = "Enjoy your items! Tap to rate your experience."
-                icon = "⭐"
-            }
-        }
-
-        val newNotif = NotificationItem(
-            id = "notif-${System.currentTimeMillis()}",
-            title = notifTitle,
-            message = notifMsg,
-            timeAgo = "Just now",
-            group = "Today",
-            iconEmoji = icon,
-            isUnread = true,
-            orderId = orderId
-        )
-
-        _uiState.update { current ->
-            val updatedOrders = current.orders.map { order ->
-                if (order.orderId == orderId) {
-                    order.copy(
-                        status = newStatus,
-                        etaMinutes = if (newStatus == OrderStatus.OUT_FOR_DELIVERY) 15 else if (newStatus == OrderStatus.DELIVERED) 0 else order.etaMinutes
-                    )
-                } else order
-            }
-
-            val updatedTracking = if (current.currentTrackingOrder?.orderId == orderId) {
-                current.currentTrackingOrder.copy(
-                    status = newStatus,
-                    etaMinutes = if (newStatus == OrderStatus.OUT_FOR_DELIVERY) 15 else if (newStatus == OrderStatus.DELIVERED) 0 else current.currentTrackingOrder.etaMinutes
-                )
-            } else current.currentTrackingOrder
-
-            val updatedLastPlaced = if (current.lastPlacedOrder?.orderId == orderId) {
-                current.lastPlacedOrder.copy(
-                    status = newStatus,
-                    etaMinutes = if (newStatus == OrderStatus.OUT_FOR_DELIVERY) 15 else if (newStatus == OrderStatus.DELIVERED) 0 else current.lastPlacedOrder.etaMinutes
-                )
-            } else current.lastPlacedOrder
-
-            current.copy(
-                orders = updatedOrders,
-                currentTrackingOrder = updatedTracking,
-                lastPlacedOrder = updatedLastPlaced,
-                notifications = listOf(newNotif) + current.notifications
-            )
+            return
         }
 
         viewModelScope.launch {
-            _snackbarEvent.emit("Admin: Order #$orderId marked as ${newStatus.label}")
+            val result = orderRepository.updateOrderStatus(orderId, newStatus)
+            if (result.isSuccess) {
+                val updated = result.getOrNull()!!
+
+                var notifTitle = "Order #$orderId Update"
+                var notifMsg = "Your order status changed to ${newStatus.label}"
+                var icon = "📦"
+
+                when (newStatus) {
+                    OrderStatus.CONFIRMED -> {
+                        notifTitle = "Order #$orderId Confirmed!"
+                        notifMsg = "Merchant accepted your order and started preparation."
+                        icon = "✅"
+                    }
+                    OrderStatus.PREPARING -> {
+                        notifTitle = "Order #$orderId Packing"
+                        notifMsg = "Your items are being packed in the warehouse."
+                        icon = "📦"
+                    }
+                    OrderStatus.SHIPPED -> {
+                        notifTitle = "Order #$orderId Shipped!"
+                        notifMsg = "Handed to courier Ahmed (0100 892 3411)."
+                        icon = "🚚"
+                    }
+                    OrderStatus.OUT_FOR_DELIVERY -> {
+                        notifTitle = "🚚 Order #$orderId Out for Delivery!"
+                        notifMsg = "Courier is approaching your doorstep in ~15 mins."
+                        icon = "📍"
+                    }
+                    OrderStatus.DELIVERED -> {
+                        notifTitle = "🎉 Order #$orderId Delivered!"
+                        notifMsg = "Enjoy your items! Tap to rate your experience."
+                        icon = "⭐"
+                    }
+                    else -> {}
+                }
+
+                val newNotif = NotificationItem(
+                    id = "notif-${System.currentTimeMillis()}",
+                    title = notifTitle,
+                    message = notifMsg,
+                    timeAgo = "Just now",
+                    group = "Today",
+                    iconEmoji = icon,
+                    isUnread = true,
+                    orderId = orderId
+                )
+
+                _uiState.update { current ->
+                    current.copy(
+                        currentTrackingOrder = if (current.currentTrackingOrder?.orderId == orderId) updated else current.currentTrackingOrder,
+                        lastPlacedOrder = if (current.lastPlacedOrder?.orderId == orderId) updated else current.lastPlacedOrder,
+                        notifications = listOf(newNotif) + current.notifications
+                    )
+                }
+
+                _snackbarEvent.emit("Admin: Order #$orderId marked as ${newStatus.label}")
+            }
         }
     }
 
@@ -462,5 +545,13 @@ class ShopViewModel : ViewModel() {
         _uiState.update { current ->
             current.copy(notifications = current.notifications.map { it.copy(isUnread = false) })
         }
+    }
+
+    fun togglePushNotifications(enabled: Boolean) {
+        sessionPrefs.setPushNotificationsEnabled(enabled)
+    }
+
+    fun toggleFastCheckout(enabled: Boolean) {
+        sessionPrefs.setFastCheckoutEnabled(enabled)
     }
 }
