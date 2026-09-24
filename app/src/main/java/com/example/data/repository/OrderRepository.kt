@@ -5,6 +5,7 @@ import com.example.data.local.OrderEntity
 import com.example.data.remote.api.LuminaApiService
 import com.example.data.remote.dto.CreateOrderItemRequest
 import com.example.data.remote.dto.CreateOrderRequest
+import com.example.domain.repository.IOrderRepository
 import com.example.model.Address
 import com.example.model.CartItem
 import com.example.model.Order
@@ -20,13 +21,12 @@ import kotlin.random.Random
 class OrderRepository(
     private val orderDao: OrderDao,
     private val apiService: LuminaApiService
-) {
-    // In-memory orders flow synced with Room
+) : IOrderRepository {
+
     private val _ordersFlow = MutableStateFlow<List<Order>>(emptyList())
-    val ordersFlow: Flow<List<Order>> = _ordersFlow.asStateFlow()
+    override val ordersFlow: Flow<List<Order>> = _ordersFlow.asStateFlow()
 
     init {
-        // Initialize with default sample order if none exists
         val initialOrder = Order(
             orderId = "10419",
             date = "Yesterday • 4:15 PM",
@@ -47,7 +47,7 @@ class OrderRepository(
         _ordersFlow.value = listOf(initialOrder)
     }
 
-    suspend fun createOrder(
+    override suspend fun createOrder(
         items: List<CartItem>,
         address: Address,
         paymentMethod: String,
@@ -57,13 +57,11 @@ class OrderRepository(
             return@withContext Result.failure(IllegalStateException("Cart is empty"))
         }
 
-        // Authoritative Server-side Price Calculation
         val calculatedSubtotal = items.sumOf { it.totalItemPrice }
         val calculatedDeliveryFee = if (calculatedSubtotal >= 1000.0) 0.0 else 50.0
         val finalDiscount = couponDiscount.coerceAtMost(calculatedSubtotal)
         val calculatedTotal = (calculatedSubtotal + calculatedDeliveryFee - finalDiscount).coerceAtLeast(0.0)
 
-        // Try calling remote API
         try {
             val req = CreateOrderRequest(
                 items = items.map {
@@ -80,7 +78,7 @@ class OrderRepository(
             )
             apiService.createOrder(req)
         } catch (_: Exception) {
-            // Gracefully proceed with local creation
+            // Graceful fallback
         }
 
         val orderId = (10450 + Random.nextInt(10, 999)).toString()
@@ -105,7 +103,6 @@ class OrderRepository(
             etaMinutes = 20
         )
 
-        // Cache in Room
         try {
             orderDao.insertOrder(
                 OrderEntity(
@@ -126,15 +123,18 @@ class OrderRepository(
                     itemsSummary = "${items.size} item(s)"
                 )
             )
-        } catch (_: Exception) {
-            // ignore SQLite cache error
-        }
+        } catch (_: Exception) {}
 
         _ordersFlow.value = listOf(newOrder) + _ordersFlow.value
         Result.success(newOrder)
     }
 
-    suspend fun updateOrderStatus(orderId: String, newStatus: OrderStatus): Result<Order> = withContext(Dispatchers.IO) {
+    override suspend fun getOrderById(orderId: String): Result<Order?> = withContext(Dispatchers.IO) {
+        val found = _ordersFlow.value.find { it.orderId == orderId }
+        Result.success(found)
+    }
+
+    override suspend fun updateOrderStatus(orderId: String, newStatus: OrderStatus): Result<Order> = withContext(Dispatchers.IO) {
         val currentOrders = _ordersFlow.value
         val target = currentOrders.find { it.orderId == orderId }
             ?: return@withContext Result.failure(IllegalArgumentException("Order not found"))

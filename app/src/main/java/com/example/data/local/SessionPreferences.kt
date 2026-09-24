@@ -9,6 +9,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 
+/**
+ * Manages user session with hardware-backed encryption for tokens.
+ * Access and refresh tokens are encrypted using SecureTokenManager (AES-256-GCM Keystore).
+ */
 class SessionPreferences(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("lumina_session_prefs", Context.MODE_PRIVATE)
@@ -27,6 +31,9 @@ class SessionPreferences(context: Context) {
     val fastCheckoutEnabledFlow: StateFlow<Boolean> = _fastCheckoutEnabledFlow.asStateFlow()
 
     fun saveAuthSession(accessToken: String, refreshToken: String, user: User) {
+        val encryptedAccess = SecureTokenManager.encrypt(accessToken)
+        val encryptedRefresh = SecureTokenManager.encrypt(refreshToken)
+
         val userJson = JSONObject().apply {
             put("id", user.id)
             put("name", user.name)
@@ -37,23 +44,30 @@ class SessionPreferences(context: Context) {
         }.toString()
 
         prefs.edit()
-            .putString(KEY_ACCESS_TOKEN, accessToken)
-            .putString(KEY_REFRESH_TOKEN, refreshToken)
+            .putString(KEY_ACCESS_TOKEN_ENC, encryptedAccess)
+            .putString(KEY_REFRESH_TOKEN_ENC, encryptedRefresh)
             .putString(KEY_USER_DATA, userJson)
             .apply()
 
         _currentUserFlow.value = user
     }
 
-    fun getAccessToken(): String? = prefs.getString(KEY_ACCESS_TOKEN, null)
-    fun getRefreshToken(): String? = prefs.getString(KEY_REFRESH_TOKEN, null)
+    fun getAccessToken(): String? {
+        val encrypted = prefs.getString(KEY_ACCESS_TOKEN_ENC, null) ?: return null
+        return SecureTokenManager.decrypt(encrypted)
+    }
+
+    fun getRefreshToken(): String? {
+        val encrypted = prefs.getString(KEY_REFRESH_TOKEN_ENC, null) ?: return null
+        return SecureTokenManager.decrypt(encrypted)
+    }
 
     fun getCurrentUser(): User? = _currentUserFlow.value
 
     fun clearSession() {
         prefs.edit()
-            .remove(KEY_ACCESS_TOKEN)
-            .remove(KEY_REFRESH_TOKEN)
+            .remove(KEY_ACCESS_TOKEN_ENC)
+            .remove(KEY_REFRESH_TOKEN_ENC)
             .remove(KEY_USER_DATA)
             .apply()
 
@@ -90,8 +104,8 @@ class SessionPreferences(context: Context) {
     }
 
     companion object {
-        private const val KEY_ACCESS_TOKEN = "access_token"
-        private const val KEY_REFRESH_TOKEN = "refresh_token"
+        private const val KEY_ACCESS_TOKEN_ENC = "enc_access_token"
+        private const val KEY_REFRESH_TOKEN_ENC = "enc_refresh_token"
         private const val KEY_USER_DATA = "user_data"
         private const val KEY_PUSH_NOTIFICATIONS = "push_notifications"
         private const val KEY_FAST_CHECKOUT = "fast_checkout"

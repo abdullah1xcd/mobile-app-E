@@ -3,6 +3,7 @@ package com.example.data.repository
 import com.example.data.SampleData
 import com.example.data.local.CartDao
 import com.example.data.local.CartItemEntity
+import com.example.domain.repository.ICartRepository
 import com.example.model.CartItem
 import com.example.model.Product
 import kotlinx.coroutines.Dispatchers
@@ -12,8 +13,9 @@ import kotlinx.coroutines.withContext
 
 class CartRepository(
     private val cartDao: CartDao
-) {
-    val cartItemsFlow: Flow<List<CartItem>> = cartDao.getAllCartItems().map { entities ->
+) : ICartRepository {
+
+    override val cartItemsFlow: Flow<List<CartItem>> = cartDao.getAllCartItems().map { entities ->
         entities.map { entity ->
             val product = SampleData.products.find { it.id == entity.productId }
                 ?: Product(
@@ -36,12 +38,12 @@ class CartRepository(
         }
     }
 
-    suspend fun addToCart(
+    override suspend fun addToCart(
         product: Product,
-        size: Int? = null,
-        color: String? = null,
-        quantity: Int = 1
-    ) = withContext(Dispatchers.IO) {
+        size: Int?,
+        color: String?,
+        quantity: Int
+    ): Unit = withContext(Dispatchers.IO) {
         val entity = CartItemEntity(
             productId = product.id,
             productName = product.name,
@@ -54,9 +56,10 @@ class CartRepository(
             quantity = quantity
         )
         cartDao.insertItem(entity)
+        Unit
     }
 
-    suspend fun updateQuantity(item: CartItem, delta: Int) = withContext(Dispatchers.IO) {
+    override suspend fun updateQuantity(item: CartItem, delta: Int): Unit = withContext(Dispatchers.IO) {
         val newQuantity = item.quantity + delta
         if (newQuantity <= 0) {
             cartDao.deleteByProductId(item.product.id)
@@ -74,13 +77,16 @@ class CartRepository(
             )
             cartDao.insertItem(entity)
         }
+        Unit
     }
 
-    suspend fun removeFromCart(item: CartItem) = withContext(Dispatchers.IO) {
+    override suspend fun removeFromCart(item: CartItem): Unit = withContext(Dispatchers.IO) {
         cartDao.deleteByProductId(item.product.id)
+        Unit
     }
 
-    suspend fun clearCart() = withContext(Dispatchers.IO) {
+    override suspend fun clearCart(): Unit = withContext(Dispatchers.IO) {
         cartDao.clearCart()
+        Unit
     }
 }
