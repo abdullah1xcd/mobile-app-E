@@ -1,0 +1,6 @@
+{
+  "name": "Lumina",
+  "description": "Modern premium e-commerce app featuring fast minimal shopping, smart personalized recommendations, interactive order tracking, and seamless checkout.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
